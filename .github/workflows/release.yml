@@ -1,0 +1,144 @@
+# AXENT POS's releases (axent-labs/pos, A-010): every hour, and whenever run by hand for a tag, a
+# release tag of the private pos that has no release here yet is built into the files a shop
+# installs, and published here. This repository holds no source, and its logs are public: no step
+# prints the source, only the finished files leave a build, and a release says what each file is
+# and how to install it, never the commits behind it, which stay on pos's own releases.
+#
+# pos is read with a read-only deploy key, the secret POS_DEPLOY_KEY. Nothing is published until
+# every file of a release is built: a release is made as a draft, the builds attach their files,
+# and it is published last, as a pre-release for a beta and as the latest for a release.
+# Publishing is switched on by the repository variable PUBLISH, set to true once the builds are
+# in place (P12-M06); until then every release stays a draft, which only the organization sees.
+
+name: Release
+
+on:
+  schedule:
+    - cron: "23 * * * *" # every hour
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "A tag of axent-labs/pos to build, as v0.2.0; empty for the newest not yet built"
+        required: false
+
+permissions:
+  contents: write
+
+# One release at a time: an hourly run never starts beside one still building.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  POS: git@github.com:axent-labs/pos.git
+  # Released before this repository built anything: never built on the hour, only when asked.
+  BEFORE: "v0.1.0-beta.1 v0.1.0-beta.2 v0.1.0-beta.3"
+
+jobs:
+  find:
+    name: Find the tag to build
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      version: ${{ steps.pick.outputs.version }}
+      beta: ${{ steps.pick.outputs.beta }}
+    steps:
+      - name: Read pos's tags, and the releases already here
+        id: pick
+        env:
+          DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          ASKED: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/pos
+          chmod 600 ~/.ssh/pos
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/pos -o IdentitiesOnly=yes"
+          tags=$(git ls-remote --tags --refs "$POS" 'v*' | sed 's#.*refs/tags/##' | sort -V)
+          made=$(gh release list -R "$GITHUB_REPOSITORY" --limit 500 --json tagName --jq '.[].tagName')
+          pick=""
+          if [ -n "$ASKED" ]; then
+            if ! grep -qx -- "$ASKED" <<<"$tags"; then
+              echo "::error::$ASKED is not a tag of axent-labs/pos"
+              exit 1
+            fi
+            if grep -qx -- "$ASKED" <<<"$made"; then
+              echo "::error::$ASKED has a release here already; delete it first to build it again"
+              exit 1
+            fi
+            pick="$ASKED"
+          else
+            # The newest tag with no release here, but for those from before this repository.
+            for tag in $(tac <<<"$tags"); do
+              grep -qx -- "$tag" <<<"$made" && continue
+              [[ " $BEFORE " == *" $tag "* ]] && continue
+              pick="$tag"
+              break
+            done
+          fi
+          if [ -z "$pick" ]; then
+            echo "Nothing to build: every release tag of pos has its release here."
+          else
+            echo "Building $pick."
+          fi
+          echo "tag=$pick" >> "$GITHUB_OUTPUT"
+          echo "version=${pick#v}" >> "$GITHUB_OUTPUT"
+          [[ "$pick" == *-* ]] && echo "beta=true" >> "$GITHUB_OUTPUT" || echo "beta=false" >> "$GITHUB_OUTPUT"
+
+  draft:
+    name: Make the release, as a draft
+    needs: find
+    if: needs.find.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Its draft, with what each file is and how to install it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.find.outputs.tag }}
+          VERSION: ${{ needs.find.outputs.version }}
+          BETA: ${{ needs.find.outputs.beta }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "$BETA" = "true" ]; then
+              echo "A beta of AXENT POS $VERSION, for trying out before its release."
+            else
+              echo "AXENT POS $VERSION."
+            fi
+            echo
+            echo "| File | For | To install |"
+            echo "| --- | --- | --- |"
+            echo "| \`axent-pos_${VERSION}_amd64.deb\` | Ubuntu, Debian | \`sudo apt install ./axent-pos_${VERSION}_amd64.deb\` |"
+            echo "| \`AXENT-POS-${VERSION}-setup.exe\` | Windows 10 and 11 | Open it; if Windows says the publisher is unknown, choose **More info**, then **Run anyway**. |"
+            echo "| \`axent-pos-${VERSION}.apk\` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |"
+            [ "$BETA" = "true" ] || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications; the first time, right-click the app and choose **Open**. |"
+            echo
+            echo "Questions: 0701 473 767 | 0111 969 379"
+          } > notes.md
+          flags=(--draft --title "AXENT POS $VERSION" --notes-file notes.md)
+          [ "$BETA" = "true" ] && flags+=(--prerelease)
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target main "${flags[@]}"
+
+  # The builds go here, each attaching its file to the draft: the .deb (P12-M02), the .exe
+  # (P12-M03), the .apk (P12-M04) and, for a release on main, the .dmg (P12-M05).
+
+  publish:
+    name: Publish the release
+    needs: [find, draft]
+    if: needs.find.outputs.tag != '' && vars.PUBLISH == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Published, as the latest or a pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.find.outputs.tag }}
+          BETA: ${{ needs.find.outputs.beta }}
+        run: |
+          set -euo pipefail
+          if [ "$BETA" = "true" ]; then
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease
+          else
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
