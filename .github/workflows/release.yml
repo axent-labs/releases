@@ -469,6 +469,16 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+      # A try's .apk is kept a day, for trying it on a real phone; whoever
+      # downloads it deletes it, a try being no release.
+      - name: Kept a day, on a try
+        if: needs.find.outputs.try == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: dist/axent-pos-*.apk
+          retention-days: 1
+
       - name: Attached to the draft
         if: needs.find.outputs.try != 'true'
         env:
