@@ -14,6 +14,8 @@
 # qmake of the Qt it was built with on PATH, or QMAKE set to it, and dpkg-deb. Refuses to make a
 # package with anything of the Activator's in it: the key tool is never released (A-010).
 set -euo pipefail
+# A step that fails says which, rather than the script ending in silence.
+trap 'echo "deb.sh: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 source=$(realpath "${1:?the pos checkout}")
 build=$(realpath "${2:?its Release build}")
