@@ -221,6 +221,47 @@ jobs:
           fi
           dpkg-deb -I dist/*.deb | sed -n '/Package:/,/Depends:/p'
 
+      - name: Installed and opened, on the oldest Ubuntu it is for and the newest
+        # As a shop would: installed with apt on a bare Ubuntu, AXENT POS opened on the demo shop
+        # and left running a while, its data made where it keeps it. Its Wayland graphics plugin is
+        # carried, and the system's own libraries, the keychain's among them, still load beside
+        # what it carries: a newer Ubuntu is where carrying an older one of those breaks.
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/shop.sh" <<'SHOP'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq > /dev/null
+          apt-get install -y -qq /dist/*.deb xvfb xauth libsecret-1-0 python3 > /dev/null
+          . /etc/os-release
+          test -e /opt/axent-pos/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so \
+            || { echo "::error::no Wayland graphics plugin on $PRETTY_NAME"; exit 1; }
+          env LD_LIBRARY_PATH=/opt/axent-pos/lib python3 -c "import ctypes; ctypes.CDLL('libsecret-1.so.0')" \
+            || { echo "::error::the keychain's library does not load beside the .deb's on $PRETTY_NAME"; exit 1; }
+          xvfb-run -a axent --demo > /tmp/axent.log 2>&1 &
+          sleep 15
+          if ! pgrep -x axent > /dev/null; then
+            echo "::error::AXENT POS stopped by itself on $PRETTY_NAME"
+            grep -vE "^$" /tmp/axent.log | tail -20
+            exit 1
+          fi
+          shop=$(find / -xdev -name ledgry-demo.sqlite 2> /dev/null | head -1)
+          [ -n "$shop" ] || { echo "::error::AXENT POS made no demo shop on $PRETTY_NAME"; exit 1; }
+          echo "Installed and opened on the demo shop on $PRETTY_NAME for 15 seconds."
+          SHOP
+          sed -i 's/^          //' "$RUNNER_TEMP/shop.sh"
+          for ubuntu in 22.04 24.04; do
+            docker run --rm -v "$PWD/dist:/dist:ro" -v "$RUNNER_TEMP/shop.sh:/shop.sh:ro" "ubuntu:$ubuntu" bash /shop.sh
+          done
+
+      - name: Kept a day, on a try
+        if: needs.find.outputs.try == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb
+          retention-days: 1
+
       - name: Attached to the draft
         if: needs.find.outputs.try != 'true'
         env:
