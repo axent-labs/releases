@@ -78,6 +78,25 @@ mkdir -p "$root/opt/axent-pos" "$root/usr/bin" "$root/usr/share/applications" \
          "$root/usr/share/icons/hicolor/256x256/apps" "$root/DEBIAN"
 cp -a "$work/AppDir/usr/." "$root/opt/axent-pos/"
 rm -rf "$root/opt/axent-pos/share/applications" "$root/opt/axent-pos/share/icons"
+
+# Wayland's graphics plugin, which linuxdeploy leaves out: without it, on a Wayland desktop the
+# program finds no way to draw with OpenGL and closes as it opens. Its libraries are carried already.
+mkdir -p "$root/opt/axent-pos/plugins/wayland-graphics-integration-client"
+cp "$qt/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so" \
+   "$root/opt/axent-pos/plugins/wayland-graphics-integration-client/"
+
+# Only Qt's own libraries are carried. linuxdeploy also copies the system's, GLib's, GnuTLS's,
+# systemd's and more, from the Ubuntu it is built on; on a newer one those older copies are loaded
+# before the system's and break what the system then loads beside them, the keychain's libsecret
+# among them. Each library a system package holds is left to that package, which the package then
+# depends on, as the machine's own copy is always the one its other libraries were built with.
+for library in "$root"/opt/axent-pos/lib/*.so*; do
+    name=$(basename "$library")
+    [ -e "$qtlibs/$name" ] && continue
+    if dpkg -S "/usr/lib/x86_64-linux-gnu/$name" > /dev/null 2>&1 || dpkg -S "/lib/x86_64-linux-gnu/$name" > /dev/null 2>&1; then
+        rm "$library"
+    fi
+done
 ln -s /opt/axent-pos/bin/axent "$root/usr/bin/axent"
 cp "$source/packaging/axent.desktop" "$root/usr/share/applications/axent.desktop"
 cp "$source/packaging/axent.png" "$root/usr/share/icons/hicolor/256x256/apps/axent.png"
