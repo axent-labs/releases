@@ -118,17 +118,23 @@ elves=$(find "$root/opt/axent-pos" -type f \( -name '*.so*' -o -perm -u+x \) -ex
     | grep -E 'ELF .*(executable|shared object)' | cut -d: -f1)
 depends=""
 missing=""
+declare -A owners  # each library's package, looked up once
 for elf in $elves; do
     needed=$(readelf -d "$elf" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
     found=$(env -u LD_LIBRARY_PATH ldd "$elf" 2>/dev/null || true)
     for soname in $needed; do
         [ -e "$root/opt/axent-pos/lib/$soname" ] && continue
-        library=$(awk -v n="$soname" '$1 == n && $3 ~ /^\// { print $3 }' <<<"$found")
+        # ldd prints the loader, ld-linux, as its path alone, with no "=>".
+        library=$(awk -v n="$soname" '$1 == n && $3 ~ /^\// { print $3; exit }
+            $1 ~ /^\// && $2 ~ /^\(/ && substr($1, length($1) - length(n)) == "/" n { print $1; exit }' <<<"$found")
         case "$library" in
             "") missing+="  $soname, for ${elf#$root}"$'\n'; continue ;;
             "$root"/*) continue ;;
         esac
-        owner=$(dpkg -S "$(realpath "$library")" 2>/dev/null || dpkg -S "$library" 2>/dev/null || true)
+        if [ -z "${owners[$library]+found}" ]; then
+            owners[$library]=$(dpkg -S "$(realpath "$library")" 2>/dev/null || dpkg -S "$library" 2>/dev/null || true)
+        fi
+        owner=${owners[$library]}
         if [ -n "$owner" ]; then depends+="${owner%%:*}"$'\n'; else missing+="  $library"$'\n'; fi
     done
 done
