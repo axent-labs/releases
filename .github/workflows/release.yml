@@ -363,13 +363,13 @@ jobs:
           java-version: "17"
 
       - name: Qt ${{ env.QT_VERSION }} for Android, and for this machine beside it
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: linux
-          target: android
-          arch: android_arm64_v8a
-          cache: true
+        # aqtinstall itself: the Qt action cannot find Qt 6.8's Android kit, which aqt installs.
+        run: |
+          set -euo pipefail
+          pip install -q aqtinstall
+          aqt install-qt linux android "$QT_VERSION" android_arm64_v8a --autodesktop -O "$RUNNER_TEMP/Qt" > "$RUNNER_TEMP/aqt.log" 2>&1 \
+            || { tail -20 "$RUNNER_TEMP/aqt.log"; exit 1; }
+          echo "QT_ROOT_DIR=$RUNNER_TEMP/Qt/$QT_VERSION/android_arm64_v8a" >> "$GITHUB_ENV"
 
       - name: The NDK and Android platform
         run: |
