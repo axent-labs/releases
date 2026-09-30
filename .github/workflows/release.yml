@@ -132,7 +132,7 @@ jobs:
             echo "| \`axent-pos_${VERSION}_amd64.deb\` | Ubuntu, Debian | \`sudo apt install ./axent-pos_${VERSION}_amd64.deb\` |"
             echo "| \`AXENT-POS-${VERSION}-setup.exe\` | Windows 10 and 11 | Open it; if Windows says the publisher is unknown, choose **More info**, then **Run anyway**. |"
             echo "| \`axent-pos-${VERSION}.apk\` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |"
-            [ "$BETA" = "true" ] || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications; the first time, right-click the app and choose **Open**. |"
+            [ "$BETA" = "true" ] || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications. The first time, macOS says it cannot check the app: choose **Done**, then in System Settings, Privacy & Security, choose **Open Anyway**. |"
             echo
             echo "Questions: 0701 473 767 | 0111 969 379"
           } > notes.md
@@ -140,9 +140,9 @@ jobs:
           [ "$BETA" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target main "${flags[@]}"
 
-  # Each build attaches its file to the draft: the .deb, the .exe and the .apk here, and in time,
-  # for a release on main, the .dmg (P12-M05). Each builds the program alone,
-  # never the key tool beside it in pos, and refuses to attach anything of the Activator's.
+  # Each build attaches its file to the draft: the .deb, the .exe and the .apk, and for a release
+  # on main the .dmg. Each builds the program alone, never the key tool beside it in pos, and
+  # refuses to attach anything of the Activator's.
 
   deb:
     name: The .deb, for Ubuntu and Debian
@@ -475,10 +475,153 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" "dist/axent-pos-${VERSION}.apk" -R "$GITHUB_REPOSITORY" --clobber
 
+  dmg:
+    name: The .dmg, for macOS
+    needs: [find, draft]
+    # A release on main only, a macOS build being the dearest; betas go without (A-010).
+    if: >-
+      always() && needs.find.outputs.tag != '' &&
+      (needs.draft.result == 'success' || needs.find.outputs.try == 'true') &&
+      (needs.find.outputs.beta == 'false' || needs.find.outputs.try == 'true') &&
+      contains(fromJSON('["all", "dmg"]'), needs.find.outputs.only)
+    # An Apple Silicon Mac, building one app for Apple Silicon and Intel Macs alike.
+    runs-on: macos-14
+    env:
+      TAG: ${{ needs.find.outputs.tag }}
+      VERSION: ${{ needs.find.outputs.version }}
+      APP: AXENT POS.app
+    steps:
+      - name: pos, at the tag
+        env:
+          DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          # The key and GitHub's host key in the runner's own temporary folder, on any runner.
+          key="$RUNNER_TEMP/pos-key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keyscan -t ed25519 github.com > "$RUNNER_TEMP/known_hosts" 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i '$key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$RUNNER_TEMP/known_hosts'" \
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$POS" pos
+          rm "$key"
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          # Qt Serial Port, for a receipt printer connected directly (A-003).
+          modules: qtserialport
+          cache: true
+
+      - name: Build the app alone, for Apple Silicon and Intel
+        # Into logs that stay on the runner: only what went wrong is shown, never the source.
+        run: |
+          set -euo pipefail
+          command -v ninja > /dev/null || brew install ninja > /dev/null
+          cmake -S pos -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DLEDGRY_VERSION_NAME="$VERSION" \
+            > configure.log 2>&1 || { grep -E -A8 "CMake Error" configure.log | head -60; exit 1; }
+          cmake --build build --target ledgry > build.log 2>&1 || {
+            grep -E ": (fatal )?error:|ld: " build.log | head -30
+            exit 1
+          }
+          [ ! -e build/ledgry-keys ] || { echo "::error::the key tool was built"; exit 1; }
+          echo "Built $APP for $(lipo -archs "build/$APP/Contents/MacOS/AXENT POS")."
+
+      - name: Its Qt inside it, and signed for this Mac alone
+        # Unsigned by AXENT until it has an Apple developer account (A-010): signed ad hoc, as an
+        # Apple Silicon Mac needs before it runs anything, so macOS asks once before opening it.
+        run: |
+          set -euo pipefail
+          macdeployqt "build/$APP" -qmldir=pos/qml -always-overwrite > deploy.log 2>&1 \
+            || { grep -iE "error|warning" deploy.log | head -30; exit 1; }
+          codesign --force --deep --sign - "build/$APP"
+          codesign --verify --deep --strict "build/$APP"
+          # Nothing ships without Qt inside it, and nothing of the Activator's ships at all.
+          for needed in Contents/Frameworks/QtCore.framework Contents/Frameworks/QtQuick.framework \
+                        Contents/PlugIns/platforms/libqcocoa.dylib Contents/PlugIns/sqldrivers/libqsqlite.dylib \
+                        Contents/Resources/qt.conf Contents/Resources/axent.icns; do
+            [ -e "build/$APP/$needed" ] || { echo "::error::the app has no $needed"; exit 1; }
+          done
+          if find "build/$APP" | grep -iE "ledgry-keys|activator"; then
+            echo "::error::the app carries something of the Activator's"
+            exit 1
+          fi
+
+      - name: The .dmg
+        # The app beside a link to Applications, to drag it onto.
+        run: |
+          set -euo pipefail
+          mkdir -p image dist
+          cp -R "build/$APP" image/
+          ln -s /Applications image/Applications
+          hdiutil create -quiet -volname "AXENT POS" -srcfolder image -fs HFS+ -format UDZO \
+            -ov "dist/AXENT-POS-$VERSION.dmg"
+          ls -lh dist | tail -n +2 | awk '{print $NF "  " $5}'
+
+      - name: Installed, opened and taken out again
+        # As a shop would: dragged from the .dmg to Applications, opened on the demo shop, left
+        # running a while, its data made where it keeps it; then the Intel half the same way.
+        run: |
+          set -euo pipefail
+          mount=$(hdiutil attach -nobrowse -readonly "dist/AXENT-POS-$VERSION.dmg" | awk -F'\t' '/Volumes/ {print $NF}')
+          cp -R "$mount/$APP" /Applications/
+          hdiutil detach -quiet "$mount"
+          program="/Applications/$APP/Contents/MacOS/AXENT POS"
+          for arch in arm64 x86_64; do
+            if [ "$arch" = x86_64 ] && ! arch -x86_64 /usr/bin/true 2> /dev/null; then
+              echo "No Rosetta on this Mac: the Intel half is built, not opened."
+              continue
+            fi
+            rm -rf "$HOME/Library/Application Support/AXENT"
+            arch -"$arch" "$program" --demo > "$RUNNER_TEMP/app-$arch.log" 2>&1 &
+            app=$!
+            sleep 15
+            if ! kill -0 "$app" 2> /dev/null; then
+              echo "::error::AXENT POS stopped by itself on $arch"
+              grep -E "qrc:/|Fatal|fatal|Abort" "$RUNNER_TEMP/app-$arch.log" | head -30
+              exit 1
+            fi
+            [ "$arch" = arm64 ] && { screencapture -x "$RUNNER_TEMP/mac.png" 2> /dev/null || true; }
+            shop=$(find "$HOME/Library/Application Support/AXENT" -name 'ledgry-demo.sqlite' 2> /dev/null | head -1)
+            [ -n "$shop" ] || { echo "::error::AXENT POS made no demo shop on $arch"; exit 1; }
+            qml=$(grep -cE "qrc:/qt/qml/" "$RUNNER_TEMP/app-$arch.log" || true)
+            [ "$qml" = "0" ] || { echo "QML said $qml things on $arch:"; grep -oE "qrc:/qt/qml/[^ ]+:[0-9]+(:[0-9]+)?: [A-Za-z ]{0,60}" "$RUNNER_TEMP/app-$arch.log" | sort | uniq -c | head -20; }
+            kill "$app"
+            wait "$app" 2> /dev/null || true
+            echo "Opened on the demo shop on $arch for 15 seconds, its shop at ${shop#$HOME/}."
+          done
+          rm -rf "/Applications/$APP"
+
+      - name: What the Mac showed, and the .dmg, kept a day, on a try
+        if: always() && needs.find.outputs.try == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: |
+            ${{ runner.temp }}/mac.png
+            dist/AXENT-POS-*.dmg
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Attached to the draft
+        if: needs.find.outputs.try != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "dist/AXENT-POS-${VERSION}.dmg" -R "$GITHUB_REPOSITORY" --clobber
+
   publish:
     name: Publish the release
-    needs: [find, draft, deb, exe, apk]
-    if: needs.find.outputs.tag != '' && vars.PUBLISH == 'true'
+    needs: [find, draft, deb, exe, apk, dmg]
+    # Once every file is attached: a beta's .dmg is skipped, as it should be, and nothing else.
+    if: >-
+      always() && needs.find.outputs.tag != '' && needs.find.outputs.try != 'true' && vars.PUBLISH == 'true' &&
+      needs.deb.result == 'success' && needs.exe.result == 'success' && needs.apk.result == 'success' &&
+      (needs.dmg.result == 'success' || (needs.dmg.result == 'skipped' && needs.find.outputs.beta == 'true'))
     runs-on: ubuntu-24.04
     steps:
       - name: Published, as the latest or a pre-release
