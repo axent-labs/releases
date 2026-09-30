@@ -426,6 +426,49 @@ jobs:
           ls -l "$apk" | awk '{ printf "%s  %.1f MB\n", $9, $5 / 1048576 }'
           echo "Signed by AXENT's key."
 
+      - name: A phone to try it on
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          # What the phone does, as one script: the emulator's runner takes its script a line at a time.
+          cat > "$RUNNER_TEMP/phone.sh" <<'PHONE'
+          set -euo pipefail
+          adb install -r "dist/axent-pos-$VERSION.apk" > /dev/null
+          adb logcat -c
+          adb shell am start -W -n com.axentlabs.pos/org.qtproject.qt.android.bindings.QtActivity > /dev/null
+          sleep 25
+          adb exec-out screencap -p > "$RUNNER_TEMP/phone.png" || true
+          qml=$(adb logcat -d | grep -cE "qrc:/qt/qml/" || true)
+          if [ "$qml" != "0" ]; then echo "QML said $qml things:"; adb logcat -d | grep -oE "qrc:/qt/qml/[^ ]+:[0-9]+(:[0-9]+)?: [A-Za-z ]{0,60}" | sort | uniq -c | head -20; fi
+          if [ -z "$(adb shell pidof com.axentlabs.pos | tr -d '\r')" ]; then
+            echo "::error::AXENT POS stopped by itself on the phone"
+            adb logcat -d | grep -E "FATAL|AndroidRuntime|DEBUG  |Abort" | head -30
+            exit 1
+          fi
+          echo "Installed and opened on Android $(adb shell getprop ro.build.version.release | tr -d '\r'); still running after 25 seconds."
+          PHONE
+          sed -i 's/^          //' "$RUNNER_TEMP/phone.sh"
+
+      - name: Installed on an Android phone, and opened
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash "$RUNNER_TEMP/phone.sh"
+
+      - name: What the phone showed, kept a day, on a try
+        if: always() && needs.find.outputs.try == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone
+          path: ${{ runner.temp }}/phone.png
+          retention-days: 1
+          if-no-files-found: ignore
+
       - name: Attached to the draft
         if: needs.find.outputs.try != 'true'
         env:
