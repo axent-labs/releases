@@ -32,7 +32,7 @@ concurrency:
 env:
   POS: git@github.com:axent-labs/pos.git
   # Released before this repository built anything: never built on the hour, only when asked.
-  BEFORE: "v0.1.0-beta.1 v0.1.0-beta.2 v0.1.0-beta.3"
+  BEFORE: "v0.1.0-beta.1 v0.1.0-beta.2 v0.1.0-beta.3 v0.1.0"
 
 jobs:
   find:
