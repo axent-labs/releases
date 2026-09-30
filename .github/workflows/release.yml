@@ -20,6 +20,12 @@ on:
       tag:
         description: "A tag of axent-labs/pos to build, as v0.2.0; empty for the newest not yet built"
         required: false
+      try:
+        description: "Or a branch of pos, only to try its builds: nothing is uploaded nor published"
+        required: false
+      only:
+        description: "With a try, the one build to run: deb, exe, apk or dmg; empty for every one"
+        required: false
 
 permissions:
   contents: write
@@ -43,6 +49,8 @@ jobs:
       tag: ${{ steps.pick.outputs.tag }}
       version: ${{ steps.pick.outputs.version }}
       beta: ${{ steps.pick.outputs.beta }}
+      try: ${{ steps.pick.outputs.try }}
+      only: ${{ steps.pick.outputs.only }}
     steps:
       - name: Read pos's tags, and the releases already here
         id: pick
@@ -50,8 +58,18 @@ jobs:
           DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
           GH_TOKEN: ${{ github.token }}
           ASKED: ${{ inputs.tag }}
+          TRY: ${{ inputs.try }}
+          ONLY: ${{ inputs.only }}
         run: |
           set -euo pipefail
+          # A try builds a branch of pos, under a version of its own, and uploads nothing.
+          if [ -n "$TRY" ]; then
+            echo "Trying the builds of pos's $TRY, uploading nothing."
+            { echo "tag=$TRY"; echo "version=0.0.0-try.1"; echo "beta=true"; echo "try=true"; echo "only=${ONLY:-all}"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "try=false" >> "$GITHUB_OUTPUT"
+          echo "only=all" >> "$GITHUB_OUTPUT"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/pos
           chmod 600 ~/.ssh/pos
@@ -91,7 +109,7 @@ jobs:
   draft:
     name: Make the release, as a draft
     needs: find
-    if: needs.find.outputs.tag != ''
+    if: needs.find.outputs.tag != '' && needs.find.outputs.try != 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Its draft, with what each file is and how to install it
@@ -122,13 +140,17 @@ jobs:
           [ "$BETA" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target main "${flags[@]}"
 
-  # Each build attaches its file to the draft: the .deb and the .exe here, and in time the .apk
-  # (P12-M04) and, for a release on main, the .dmg (P12-M05). Each builds the program alone,
+  # Each build attaches its file to the draft: the .deb, the .exe and the .apk here, and in time,
+  # for a release on main, the .dmg (P12-M05). Each builds the program alone,
   # never the key tool beside it in pos, and refuses to attach anything of the Activator's.
 
   deb:
     name: The .deb, for Ubuntu and Debian
     needs: [find, draft]
+    if: >-
+      always() && needs.find.outputs.tag != '' &&
+      (needs.draft.result == 'success' || needs.find.outputs.try == 'true') &&
+      contains(fromJSON('["all", "deb"]'), needs.find.outputs.only)
     # The oldest Ubuntu it is for: built there, it installs there and on every one since.
     runs-on: ubuntu-22.04
     env:
@@ -184,7 +206,7 @@ jobs:
       - name: The .deb
         env:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
-          LEDGRY_VERSION: ${{ needs.find.outputs.tag }}
+          LEDGRY_VERSION: ${{ needs.find.outputs.version }}
         run: |
           set -euo pipefail
           mkdir dist
@@ -200,6 +222,7 @@ jobs:
           dpkg-deb -I dist/*.deb | sed -n '/Package:/,/Depends:/p'
 
       - name: Attached to the draft
+        if: needs.find.outputs.try != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/axent-pos_${VERSION}_amd64.deb -R "$GITHUB_REPOSITORY" --clobber
@@ -207,6 +230,10 @@ jobs:
   exe:
     name: The .exe, for Windows
     needs: [find, draft]
+    if: >-
+      always() && needs.find.outputs.tag != '' &&
+      (needs.draft.result == 'success' || needs.find.outputs.try == 'true') &&
+      contains(fromJSON('["all", "exe"]'), needs.find.outputs.only)
     runs-on: windows-2022
     env:
       TAG: ${{ needs.find.outputs.tag }}
@@ -291,14 +318,166 @@ jobs:
           Write-Output "Installed, opened on the demo shop for 15 seconds, and uninstalled."
 
       - name: Attached to the draft
+        if: needs.find.outputs.try != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" "dist/AXENT-POS-${VERSION}-setup.exe" -R "$GITHUB_REPOSITORY" --clobber
 
+  apk:
+    name: The .apk, for Android
+    needs: [find, draft]
+    if: >-
+      always() && needs.find.outputs.tag != '' &&
+      (needs.draft.result == 'success' || needs.find.outputs.try == 'true') &&
+      contains(fromJSON('["all", "apk"]'), needs.find.outputs.only)
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.find.outputs.tag }}
+      VERSION: ${{ needs.find.outputs.version }}
+      # The NDK and Android platform Qt 6.8 is built for.
+      NDK: "26.1.10909125"
+      PLATFORM: "android-34"
+      BUILD_TOOLS: "34.0.0"
+      # AXENT's own signing key, whose certificate every .apk must carry (axent-labs/android-signing);
+      # its store and password are the secrets ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD.
+      CERTIFICATE: "0829c97f0de56ad51b732a074a5951526457c37efe1155028db4bb61dc78b54d"
+    steps:
+      - name: pos, at the tag
+        env:
+          DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          # The key and GitHub's host key in the runner's own temporary folder, on any runner.
+          key="$RUNNER_TEMP/pos-key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keyscan -t ed25519 github.com > "$RUNNER_TEMP/known_hosts" 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i '$key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$RUNNER_TEMP/known_hosts'" \
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$POS" pos
+          rm "$key"
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Qt ${{ env.QT_VERSION }} for Android, and for this machine beside it
+        # aqtinstall itself: the Qt action cannot find Qt 6.8's Android kit, which aqt installs.
+        run: |
+          set -euo pipefail
+          pip install -q aqtinstall
+          aqt install-qt linux android "$QT_VERSION" android_arm64_v8a --autodesktop -O "$RUNNER_TEMP/Qt" > "$RUNNER_TEMP/aqt.log" 2>&1 \
+            || { tail -20 "$RUNNER_TEMP/aqt.log"; exit 1; }
+          echo "QT_ROOT_DIR=$RUNNER_TEMP/Qt/$QT_VERSION/android_arm64_v8a" >> "$GITHUB_ENV"
+
+      - name: The NDK and Android platform
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          # Its licences accepted first: yes ends with a broken pipe once they are, which is no failure.
+          (yes 2>/dev/null || true) | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" --install "ndk;$NDK" "platforms;$PLATFORM" "build-tools;$BUILD_TOOLS" > /dev/null
+          sudo apt-get install -y -qq ninja-build > /dev/null
+
+      - name: Build the app alone, signed
+        # Into a log that stays on the runner: only what went wrong is shown, never the source.
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          # Not secret, and as a secret it would hide the word axent in every log line.
+          QT_ANDROID_KEYSTORE_ALIAS: axent
+          QT_ANDROID_KEYSTORE_STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          QT_ANDROID_KEYSTORE_KEY_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export QT_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/axent.p12"
+          base64 -d <<<"$KEYSTORE" > "$QT_ANDROID_KEYSTORE_PATH"
+          trap 'rm -f "$QT_ANDROID_KEYSTORE_PATH"' EXIT
+          "$QT_ROOT_DIR/bin/qt-cmake" -S pos -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DQT_HOST_PATH="$(dirname "$QT_ROOT_DIR")/gcc_64" \
+            -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" -DANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/$NDK" \
+            -DQT_ANDROID_SIGN_APK=ON -DLEDGRY_VERSION_NAME="$VERSION" -DBUILD_TESTING=OFF \
+            > configure.log 2>&1 || { grep -E -A8 "CMake Error" configure.log | head -60; exit 1; }
+          cmake --build build --target apk > build.log 2>&1 || {
+            grep -E ": (fatal )?error:|FAILURE|What went wrong|> [A-Z]" build.log | head -30
+            exit 1
+          }
+          apk=$(find build -name '*release-signed.apk' | head -1)
+          [ -n "$apk" ] || { echo "::error::no signed .apk was made"; find build -name '*.apk'; exit 1; }
+          mkdir dist
+          cp "$apk" "dist/axent-pos-$VERSION.apk"
+          echo "Built axent-pos-$VERSION.apk."
+
+      - name: Signed by AXENT, and nothing of the Activator in it
+        run: |
+          set -euo pipefail
+          apk="dist/axent-pos-$VERSION.apk"
+          signer=$("$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/apksigner" verify --print-certs "$apk" \
+            | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
+          if [ "$signer" != "$CERTIFICATE" ]; then
+            echo "::error::the .apk is not signed with AXENT's key (signed by $signer)"
+            exit 1
+          fi
+          if unzip -l "$apk" | grep -iE "ledgry-keys|activator"; then
+            echo "::error::the .apk carries something of the Activator's"
+            exit 1
+          fi
+          ls -l "$apk" | awk '{ printf "%s  %.1f MB\n", $9, $5 / 1048576 }'
+          echo "Signed by AXENT's key."
+
+      - name: A phone to try it on
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          # What the phone does, as one script: the emulator's runner takes its script a line at a time.
+          cat > "$RUNNER_TEMP/phone.sh" <<'PHONE'
+          set -euo pipefail
+          adb install -r "dist/axent-pos-$VERSION.apk" > /dev/null
+          adb logcat -c
+          adb shell am start -W -n com.axentlabs.pos/org.qtproject.qt.android.bindings.QtActivity > /dev/null
+          sleep 25
+          adb exec-out screencap -p > "$RUNNER_TEMP/phone.png" || true
+          qml=$(adb logcat -d | grep -cE "qrc:/qt/qml/" || true)
+          if [ "$qml" != "0" ]; then echo "QML said $qml things:"; adb logcat -d | grep -oE "qrc:/qt/qml/[^ ]+:[0-9]+(:[0-9]+)?: [A-Za-z ]{0,60}" | sort | uniq -c | head -20; fi
+          if [ -z "$(adb shell pidof com.axentlabs.pos | tr -d '\r')" ]; then
+            echo "::error::AXENT POS stopped by itself on the phone"
+            adb logcat -d | grep -E "FATAL|AndroidRuntime|DEBUG  |Abort" | head -30
+            exit 1
+          fi
+          echo "Installed and opened on Android $(adb shell getprop ro.build.version.release | tr -d '\r'); still running after 25 seconds."
+          PHONE
+          sed -i 's/^          //' "$RUNNER_TEMP/phone.sh"
+
+      - name: Installed on an Android phone, and opened
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash "$RUNNER_TEMP/phone.sh"
+
+      - name: What the phone showed, kept a day, on a try
+        if: always() && needs.find.outputs.try == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone
+          path: ${{ runner.temp }}/phone.png
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Attached to the draft
+        if: needs.find.outputs.try != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "dist/axent-pos-${VERSION}.apk" -R "$GITHUB_REPOSITORY" --clobber
+
   publish:
     name: Publish the release
-    needs: [find, draft, deb, exe]
+    needs: [find, draft, deb, exe, apk]
     if: needs.find.outputs.tag != '' && vars.PUBLISH == 'true'
     runs-on: ubuntu-24.04
     steps:
