@@ -31,6 +31,7 @@ concurrency:
 
 env:
   POS: git@github.com:axent-labs/pos.git
+  QT_VERSION: "6.8.3"
   # Released before this repository built anything: never built on the hour, only when asked.
   BEFORE: "v0.1.0-beta.1 v0.1.0-beta.2 v0.1.0-beta.3 v0.1.0"
 
@@ -121,12 +122,90 @@ jobs:
           [ "$BETA" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target main "${flags[@]}"
 
-  # The builds go here, each attaching its file to the draft: the .deb (P12-M02), the .exe
-  # (P12-M03), the .apk (P12-M04) and, for a release on main, the .dmg (P12-M05).
+  # Each build attaches its file to the draft: the .deb here, and in time the .exe (P12-M03), the
+  # .apk (P12-M04) and, for a release on main, the .dmg (P12-M05). Each builds the program alone,
+  # never the key tool beside it in pos, and refuses to attach anything of the Activator's.
+
+  deb:
+    name: The .deb, for Ubuntu and Debian
+    needs: [find, draft]
+    # The oldest Ubuntu it is for: built there, it installs there and on every one since.
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ needs.find.outputs.tag }}
+      VERSION: ${{ needs.find.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: releases
+
+      - name: pos, at the tag
+        env:
+          DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/pos
+          chmod 600 ~/.ssh/pos
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/pos -o IdentitiesOnly=yes" \
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$POS" pos
+          rm ~/.ssh/pos
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: linux_gcc_64
+          # Qt Serial Port, for a receipt printer connected directly (A-003).
+          modules: qtserialport
+          cache: true
+
+      - name: The libraries Qt and the keychain need
+        run: >
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq ninja-build ccache file libgl1-mesa-dev libegl1 libxkbcommon-dev
+          libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0
+          libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-xkb1 libfontconfig1-dev libsecret-1-dev
+          libwayland-dev > /dev/null
+
+      - name: Build the program alone
+        # Into a log that stays on the runner: only what went wrong is shown, never the source.
+        run: |
+          set -euo pipefail
+          cd pos
+          cmake --preset linux-release > ../configure.log 2>&1 || { grep -E "CMake Error|error:" ../configure.log | head -20; exit 1; }
+          cmake --build --preset linux-release --target ledgry > ../build.log 2>&1 || { grep -E ": (fatal )?error:" ../build.log | head -30; exit 1; }
+          test -x build/linux-release/axent
+          if [ -e build/linux-release/ledgry-keys ]; then echo "::error::the key tool was built"; exit 1; fi
+          echo "Built axent $VERSION."
+
+      - name: The .deb
+        env:
+          QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
+          LEDGRY_VERSION: ${{ needs.find.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          releases/packaging/deb.sh pos pos/build/linux-release dist
+
+      - name: Nothing of the Activator in it
+        run: |
+          set -euo pipefail
+          if dpkg-deb -c dist/*.deb | grep -iE "ledgry-keys|activator"; then
+            echo "::error::the .deb carries something of the Activator's"
+            exit 1
+          fi
+          dpkg-deb -I dist/*.deb | sed -n '/Package:/,/Depends:/p'
+
+      - name: Attached to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/axent-pos_${VERSION}_amd64.deb -R "$GITHUB_REPOSITORY" --clobber
 
   publish:
     name: Publish the release
-    needs: [find, draft]
+    needs: [find, draft, deb]
     if: needs.find.outputs.tag != '' && vars.PUBLISH == 'true'
     runs-on: ubuntu-24.04
     steps:
