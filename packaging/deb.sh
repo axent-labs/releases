@@ -108,22 +108,32 @@ if find "$root" -iname '*ledgry-keys*' -o -iname '*activator*' | grep -q .; then
     exit 1
 fi
 
-# What it needs of the system: every library its files link to that it does not carry itself,
-# found by the package that holds it on this machine. Read as it runs on a shop's machine, with no
+# What it needs of the system: every library its files link to directly that it does not carry
+# itself, found by the package that holds it on this machine. Only those it links to directly:
+# what those libraries need in turn is their packages' to name, and a name from the Ubuntu it is
+# built on need not exist on a newer one. Read as it runs on a shop's machine, with no
 # LD_LIBRARY_PATH of the build's; a library neither carried nor the system's would be missing
 # there, so it stops the package.
-libraries=$(find "$root/opt/axent-pos" -type f \( -name '*.so*' -o -perm -u+x \) -exec file {} + \
-    | grep -E 'ELF .*(executable|shared object)' | cut -d: -f1 \
-    | env -u LD_LIBRARY_PATH xargs -r ldd 2>/dev/null | awk '/=> \// { print $3 }' | sort -u)
+elves=$(find "$root/opt/axent-pos" -type f \( -name '*.so*' -o -perm -u+x \) -exec file {} + \
+    | grep -E 'ELF .*(executable|shared object)' | cut -d: -f1)
 depends=""
 missing=""
-for library in $libraries; do
-    case "$library" in "$root"/*) continue ;; esac
-    owner=$(dpkg -S "$(realpath "$library")" 2>/dev/null || dpkg -S "$library" 2>/dev/null || true)
-    if [ -n "$owner" ]; then depends+="${owner%%:*}"$'\n'; else missing+="  $library"$'\n'; fi
+for elf in $elves; do
+    needed=$(readelf -d "$elf" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+    found=$(env -u LD_LIBRARY_PATH ldd "$elf" 2>/dev/null || true)
+    for soname in $needed; do
+        [ -e "$root/opt/axent-pos/lib/$soname" ] && continue
+        library=$(awk -v n="$soname" '$1 == n && $3 ~ /^\// { print $3 }' <<<"$found")
+        case "$library" in
+            "") missing+="  $soname, for ${elf#$root}"$'\n'; continue ;;
+            "$root"/*) continue ;;
+        esac
+        owner=$(dpkg -S "$(realpath "$library")" 2>/dev/null || dpkg -S "$library" 2>/dev/null || true)
+        if [ -n "$owner" ]; then depends+="${owner%%:*}"$'\n'; else missing+="  $library"$'\n'; fi
+    done
 done
 if [ -n "$missing" ]; then
-    printf 'deb.sh: these libraries are neither carried nor the system'"'"'s:\n%s' "$missing" >&2
+    printf 'deb.sh: these libraries are neither carried nor the system'"'"'s:\n%s' "$(sort -u <<<"$missing")" >&2
     exit 1
 fi
 depends=$(sort -u <<<"$depends" | sed '/^$/d' | paste -sd, | sed 's/,/, /g')
