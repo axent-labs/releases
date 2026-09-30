@@ -122,8 +122,8 @@ jobs:
           [ "$BETA" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target main "${flags[@]}"
 
-  # Each build attaches its file to the draft: the .deb here, and in time the .exe (P12-M03), the
-  # .apk (P12-M04) and, for a release on main, the .dmg (P12-M05). Each builds the program alone,
+  # Each build attaches its file to the draft: the .deb and the .exe here, and in time the .apk
+  # (P12-M04) and, for a release on main, the .dmg (P12-M05). Each builds the program alone,
   # never the key tool beside it in pos, and refuses to attach anything of the Activator's.
 
   deb:
@@ -144,13 +144,14 @@ jobs:
           DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/pos
-          chmod 600 ~/.ssh/pos
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/pos -o IdentitiesOnly=yes" \
+          # The key and GitHub's host key in the runner's own temporary folder, on any runner.
+          key="$RUNNER_TEMP/pos-key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keyscan -t ed25519 github.com > "$RUNNER_TEMP/known_hosts" 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i '$key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$RUNNER_TEMP/known_hosts'" \
             git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$POS" pos
-          rm ~/.ssh/pos
+          rm "$key"
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
@@ -203,9 +204,101 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/axent-pos_${VERSION}_amd64.deb -R "$GITHUB_REPOSITORY" --clobber
 
+  exe:
+    name: The .exe, for Windows
+    needs: [find, draft]
+    runs-on: windows-2022
+    env:
+      TAG: ${{ needs.find.outputs.tag }}
+      VERSION: ${{ needs.find.outputs.version }}
+    steps:
+      - name: pos, at the tag
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          # The key and GitHub's host key in the runner's own temporary folder, on any runner.
+          key="$RUNNER_TEMP/pos-key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keyscan -t ed25519 github.com > "$RUNNER_TEMP/known_hosts" 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i '$key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$RUNNER_TEMP/known_hosts'" \
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$POS" pos
+          rm "$key"
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          # Qt Serial Port, for a receipt printer connected directly (A-003).
+          modules: qtserialport
+          cache: true
+
+      - name: Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build the program alone, and install it with its Qt
+        # Into logs that stay on the runner: only what went wrong is shown, never the source.
+        shell: pwsh
+        run: |
+          Set-Location pos
+          cmake --preset windows-release *> ..\configure.log
+          if ($LASTEXITCODE -ne 0) { Select-String -Path ..\configure.log -Pattern "CMake Error|error" | Select-Object -First 20; exit 1 }
+          cmake --build --preset windows-release --target ledgry *> ..\build.log
+          if ($LASTEXITCODE -ne 0) { Select-String -Path ..\build.log -Pattern ": (fatal )?error" | Select-Object -First 30; exit 1 }
+          if (Test-Path build\windows-release\ledgry-keys.exe) { Write-Error "the key tool was built"; exit 1 }
+          # Qt's deploy step takes only an absolute prefix.
+          cmake --install build\windows-release --prefix "$PWD\..\stage" *> ..\install.log
+          if ($LASTEXITCODE -ne 0) { Select-String -Path ..\install.log -Pattern "error|Error" | Select-Object -First 20; exit 1 }
+          Set-Location ..
+          # Nothing ships without Qt beside it, and nothing of the Activator's ships at all.
+          foreach ($needed in "bin\axent.exe", "bin\Qt6Core.dll", "bin\Qt6Quick.dll", "bin\qt.conf", "plugins\platforms\qwindows.dll", "plugins\sqldrivers\qsqlite.dll") {
+            if (-not (Test-Path "stage\$needed")) { Write-Error "The install has no $needed"; exit 1 }
+          }
+          $activator = Get-ChildItem stage -Recurse | Where-Object { $_.Name -match "ledgry-keys|activator" }
+          if ($activator) { $activator | ForEach-Object { $_.FullName }; Write-Error "the install carries something of the Activator's"; exit 1 }
+          Write-Output "Built and installed axent $env:VERSION."
+
+      - name: The .exe
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Q "/DVersion=$env:VERSION" "/DStaging=$PWD\stage" "/DOutDir=$PWD\dist" pos\packaging\axent.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
+
+      - name: Installed, opened and taken out again
+        # As a shop would: installed for everyone, AXENT POS opened on the demo shop, left running
+        # a while, its data made where it keeps it, then uninstalled.
+        shell: pwsh
+        run: |
+          $setup = "dist\AXENT-POS-$env:VERSION-setup.exe"
+          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ALLUSERS", "/DIR=C:\AXENT-POS" -Wait
+          if (-not (Test-Path "C:\AXENT-POS\bin\axent.exe")) { Write-Error "the installer put no axent.exe in place"; exit 1 }
+          $app = Start-Process "C:\AXENT-POS\bin\axent.exe" -ArgumentList "--demo" -PassThru
+          Start-Sleep -Seconds 15
+          if ($app.HasExited) { Write-Error "AXENT POS stopped by itself, with $($app.ExitCode)"; exit 1 }
+          $shop = Join-Path $env:APPDATA "AXENT\AXENT\ledgry-demo.sqlite"
+          if (-not (Test-Path $shop)) { Write-Error "AXENT POS made no demo shop at $shop"; exit 1 }
+          Stop-Process -Id $app.Id -Force
+          Start-Process "C:\AXENT-POS\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          Write-Output "Installed, opened on the demo shop for 15 seconds, and uninstalled."
+
+      - name: Attached to the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "dist/AXENT-POS-${VERSION}-setup.exe" -R "$GITHUB_REPOSITORY" --clobber
+
   publish:
     name: Publish the release
-    needs: [find, draft, deb]
+    needs: [find, draft, deb, exe]
     if: needs.find.outputs.tag != '' && vars.PUBLISH == 'true'
     runs-on: ubuntu-24.04
     steps:
