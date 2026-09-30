@@ -144,13 +144,14 @@ jobs:
           DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/pos
-          chmod 600 ~/.ssh/pos
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/pos -o IdentitiesOnly=yes" \
+          # The key and GitHub's host key in the runner's own temporary folder, on any runner.
+          key="$RUNNER_TEMP/pos-key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keyscan -t ed25519 github.com > "$RUNNER_TEMP/known_hosts" 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i '$key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$RUNNER_TEMP/known_hosts'" \
             git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$POS" pos
-          rm ~/.ssh/pos
+          rm "$key"
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
@@ -217,13 +218,14 @@ jobs:
           DEPLOY_KEY: ${{ secrets.POS_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/pos
-          chmod 600 ~/.ssh/pos
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/pos -o IdentitiesOnly=yes" \
+          # The key and GitHub's host key in the runner's own temporary folder, on any runner.
+          key="$RUNNER_TEMP/pos-key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keyscan -t ed25519 github.com > "$RUNNER_TEMP/known_hosts" 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i '$key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$RUNNER_TEMP/known_hosts'" \
             git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$POS" pos
-          rm ~/.ssh/pos
+          rm "$key"
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
