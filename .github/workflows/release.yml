@@ -374,8 +374,10 @@ jobs:
       - name: The NDK and Android platform
         run: |
           set -euo pipefail
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install \
-            "ndk;$NDK" "platforms;$PLATFORM" "build-tools;$BUILD_TOOLS" > /dev/null
+          sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          # Its licences accepted first: yes ends with a broken pipe once they are, which is no failure.
+          (yes 2>/dev/null || true) | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" --install "ndk;$NDK" "platforms;$PLATFORM" "build-tools;$BUILD_TOOLS" > /dev/null
           sudo apt-get install -y -qq ninja-build > /dev/null
 
       - name: Build the app alone, signed
