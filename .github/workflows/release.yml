@@ -39,7 +39,7 @@ env:
   POS: git@github.com:axent-labs/pos.git
   QT_VERSION: "6.8.3"
   # Released before this repository built anything: never built on the hour, only when asked.
-  BEFORE: "v0.1.0-beta.1 v0.1.0-beta.2 v0.1.0-beta.3 v0.1.0"
+  BEFORE: "v0.1.0-beta.1 v0.1.0-beta.2 v0.1.0-beta.3 v0.1.0 v0.2.1-beta.1"
 
 jobs:
   find:
@@ -69,7 +69,8 @@ jobs:
             exit 0
           fi
           echo "try=false" >> "$GITHUB_OUTPUT"
-          echo "only=all" >> "$GITHUB_OUTPUT"
+          # A tag may be built for one platform alone, by hand: deb, exe, apk or dmg.
+          echo "only=${ONLY:-all}" >> "$GITHUB_OUTPUT"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/pos
           chmod 600 ~/.ssh/pos
@@ -118,8 +119,11 @@ jobs:
           TAG: ${{ needs.find.outputs.tag }}
           VERSION: ${{ needs.find.outputs.version }}
           BETA: ${{ needs.find.outputs.beta }}
+          ONLY: ${{ needs.find.outputs.only }}
         run: |
           set -euo pipefail
+          # Each file's row, only for the files built.
+          builds() { [ "$ONLY" = "all" ] || [ "$ONLY" = "$1" ]; }
           {
             if [ "$BETA" = "true" ]; then
               echo "A beta of AXENT POS $VERSION, for trying out before its release."
@@ -129,10 +133,10 @@ jobs:
             echo
             echo "| File | For | To install |"
             echo "| --- | --- | --- |"
-            echo "| \`axent-pos_${VERSION}_amd64.deb\` | Ubuntu, Debian | \`sudo apt install ./axent-pos_${VERSION}_amd64.deb\` |"
-            echo "| \`AXENT-POS-${VERSION}-setup.exe\` | Windows 10 and 11 | Open it; if Windows says the publisher is unknown, choose **More info**, then **Run anyway**. |"
-            echo "| \`axent-pos-${VERSION}.apk\` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |"
-            [ "$BETA" = "true" ] || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications. The first time, macOS says it cannot check the app: choose **Done**, then in System Settings, Privacy & Security, choose **Open Anyway**. |"
+            ! builds deb || echo "| \`axent-pos_${VERSION}_amd64.deb\` | Ubuntu, Debian | \`sudo apt install ./axent-pos_${VERSION}_amd64.deb\` |"
+            ! builds exe || echo "| \`AXENT-POS-${VERSION}-setup.exe\` | Windows 10 and 11 | Open it; if Windows says the publisher is unknown, choose **More info**, then **Run anyway**. |"
+            ! builds apk || echo "| \`axent-pos-${VERSION}.apk\` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |"
+            [ "$BETA" = "true" ] || ! builds dmg || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications. The first time, macOS says it cannot check the app: choose **Done**, then in System Settings, Privacy & Security, choose **Open Anyway**. |"
             echo
             echo "Questions: 0701 473 767 | 0111 969 379"
           } > notes.md
@@ -661,8 +665,10 @@ jobs:
     # Once every file is attached: a beta's .dmg is skipped, as it should be, and nothing else.
     if: >-
       always() && needs.find.outputs.tag != '' && needs.find.outputs.try != 'true' && vars.PUBLISH == 'true' &&
-      needs.deb.result == 'success' && needs.exe.result == 'success' && needs.apk.result == 'success' &&
-      (needs.dmg.result == 'success' || (needs.dmg.result == 'skipped' && needs.find.outputs.beta == 'true'))
+      (needs.deb.result == 'success' || (needs.deb.result == 'skipped' && !contains(fromJSON('["all", "deb"]'), needs.find.outputs.only))) &&
+      (needs.exe.result == 'success' || (needs.exe.result == 'skipped' && !contains(fromJSON('["all", "exe"]'), needs.find.outputs.only))) &&
+      (needs.apk.result == 'success' || (needs.apk.result == 'skipped' && !contains(fromJSON('["all", "apk"]'), needs.find.outputs.only))) &&
+      (needs.dmg.result == 'success' || (needs.dmg.result == 'skipped' && (needs.find.outputs.beta == 'true' || !contains(fromJSON('["all", "dmg"]'), needs.find.outputs.only))))
     runs-on: ubuntu-24.04
     steps:
       - name: Published, as the latest or a pre-release
