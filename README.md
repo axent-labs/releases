@@ -10,10 +10,9 @@ A point of sale for shops, restaurants and salons in Kenya: sell in seconds, kee
 | --- | --- | --- |
 | `axent-pos_<version>_amd64.deb` | Ubuntu and Debian computers | `sudo apt install ./axent-pos_<version>_amd64.deb` |
 | `AXENT-POS-<version>-setup.exe` | Windows 10 and 11 computers | Open it. If Windows says the publisher is unknown, choose **More info**, then **Run anyway**. |
-| `axent-pos-<version>.apk` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |
 | `AXENT-POS-<version>.dmg` | Macs | Open it and drag AXENT POS to Applications. The first time, macOS says it cannot check the app: choose **Done**, then in System Settings, Privacy & Security, choose **Open Anyway**. |
 
-The shop's main machine is a computer: Windows, Ubuntu or a Mac. Phones and tablets join it over the shop's Wi-Fi.
+AXENT POS is for computers for now: Windows, Ubuntu or a Mac, the main machine and any other till joining it over the shop's network. Releases before v0.3 also carry an Android `.apk`.
 
 Each computer needs an activation key from AXENT to run. A phone or tablet joining a shop needs none.
 

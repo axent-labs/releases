@@ -135,7 +135,7 @@ jobs:
             echo "| --- | --- | --- |"
             ! builds deb || echo "| \`axent-pos_${VERSION}_amd64.deb\` | Ubuntu, Debian | \`sudo apt install ./axent-pos_${VERSION}_amd64.deb\` |"
             ! builds exe || echo "| \`AXENT-POS-${VERSION}-setup.exe\` | Windows 10 and 11 | Open it; if Windows says the publisher is unknown, choose **More info**, then **Run anyway**. |"
-            ! builds apk || echo "| \`axent-pos-${VERSION}.apk\` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |"
+            [ "$ONLY" != "apk" ] || echo "| \`axent-pos-${VERSION}.apk\` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |"
             [ "$BETA" = "true" ] || ! builds dmg || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications. The first time, macOS says it cannot check the app: choose **Done**, then in System Settings, Privacy & Security, choose **Open Anyway**. |"
             echo
             echo "Questions: 0701 473 767 | 0111 969 379"
@@ -144,8 +144,8 @@ jobs:
           [ "$BETA" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target main "${flags[@]}"
 
-  # Each build attaches its file to the draft: the .deb, the .exe and the .apk, and for a release
-  # on main the .dmg. Each builds the program alone, never the key tool beside it in pos, and
+  # Each build attaches its file to the draft: the .deb and the .exe, and for a release on main
+  # the .dmg; the .apk only when asked for by name. Each builds the program alone, never the key tool beside it in pos, and
   # refuses to attach anything of the Activator's.
 
   deb:
@@ -369,13 +369,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" "dist/AXENT-POS-${VERSION}-setup.exe" -R "$GITHUB_REPOSITORY" --clobber
 
+  # AXENT POS is for desktops for now (A-020): the .apk is built only when asked for by name, and
+  # those already published stay.
   apk:
     name: The .apk, for Android
     needs: [find, draft]
     if: >-
       always() && needs.find.outputs.tag != '' &&
       (needs.draft.result == 'success' || needs.find.outputs.try == 'true') &&
-      contains(fromJSON('["all", "apk"]'), needs.find.outputs.only)
+      needs.find.outputs.only == 'apk'
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ needs.find.outputs.tag }}
@@ -667,7 +669,7 @@ jobs:
       always() && needs.find.outputs.tag != '' && needs.find.outputs.try != 'true' && vars.PUBLISH == 'true' &&
       (needs.deb.result == 'success' || (needs.deb.result == 'skipped' && !contains(fromJSON('["all", "deb"]'), needs.find.outputs.only))) &&
       (needs.exe.result == 'success' || (needs.exe.result == 'skipped' && !contains(fromJSON('["all", "exe"]'), needs.find.outputs.only))) &&
-      (needs.apk.result == 'success' || (needs.apk.result == 'skipped' && !contains(fromJSON('["all", "apk"]'), needs.find.outputs.only))) &&
+      (needs.apk.result == 'success' || (needs.apk.result == 'skipped' && needs.find.outputs.only != 'apk')) &&
       (needs.dmg.result == 'success' || (needs.dmg.result == 'skipped' && (needs.find.outputs.beta == 'true' || !contains(fromJSON('["all", "dmg"]'), needs.find.outputs.only))))
     runs-on: ubuntu-24.04
     steps:
