@@ -136,7 +136,7 @@ jobs:
             ! builds deb || echo "| \`axent-pos_${VERSION}_amd64.deb\` | Ubuntu, Debian | \`sudo apt install ./axent-pos_${VERSION}_amd64.deb\` |"
             ! builds exe || echo "| \`AXENT-POS-${VERSION}-setup.exe\` | Windows 10 and 11 | Open it; if Windows says the publisher is unknown, choose **More info**, then **Run anyway**. |"
             [ "$ONLY" != "apk" ] || echo "| \`axent-pos-${VERSION}.apk\` | Android phones and tablets, joining a shop | Open it on the phone, allowing installs from this source when asked. |"
-            [ "$BETA" = "true" ] || ! builds dmg || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications. The first time, macOS says it cannot check the app: choose **Done**, then in System Settings, Privacy & Security, choose **Open Anyway**. |"
+            ! builds dmg || echo "| \`AXENT-POS-${VERSION}.dmg\` | macOS | Open it and drag AXENT POS to Applications. The first time, macOS says it cannot check the app: choose **Done**, then in System Settings, Privacy & Security, choose **Open Anyway**. |"
             echo
             echo "Questions: 0701 473 767 | 0111 969 379"
           } > notes.md
@@ -144,9 +144,9 @@ jobs:
           [ "$BETA" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target main "${flags[@]}"
 
-  # Each build attaches its file to the draft: the .deb and the .exe, and for a release on main
-  # the .dmg; the .apk only when asked for by name. Each builds the program alone, never the key tool beside it in pos, and
-  # refuses to attach anything of the Activator's.
+  # Each build attaches its file to the draft: the .deb, the .exe and the .dmg, for a beta and a
+  # release alike (pos's A-086); the .apk only when asked for by name. Each builds the program
+  # alone, never the key tool beside it in pos, and refuses to attach anything of the Activator's.
 
   deb:
     name: The .deb, for Ubuntu and Debian
@@ -525,11 +525,10 @@ jobs:
   dmg:
     name: The .dmg, for macOS
     needs: [find, draft]
-    # A release on main only, a macOS build being the dearest; betas go without (A-010).
+    # A beta's and a release's alike (pos's A-086, in place of A-010's main only).
     if: >-
       always() && needs.find.outputs.tag != '' &&
       (needs.draft.result == 'success' || needs.find.outputs.try == 'true') &&
-      (needs.find.outputs.beta == 'false' || needs.find.outputs.try == 'true') &&
       contains(fromJSON('["all", "dmg"]'), needs.find.outputs.only)
     # An Apple Silicon Mac, building one app for Apple Silicon and Intel Macs alike.
     runs-on: macos-14
@@ -664,13 +663,13 @@ jobs:
   publish:
     name: Publish the release
     needs: [find, draft, deb, exe, apk, dmg]
-    # Once every file is attached: a beta's .dmg is skipped, as it should be, and nothing else.
+    # Once every file is attached: the .deb, the .exe and the .dmg, a beta's as a release's.
     if: >-
       always() && needs.find.outputs.tag != '' && needs.find.outputs.try != 'true' && vars.PUBLISH == 'true' &&
       (needs.deb.result == 'success' || (needs.deb.result == 'skipped' && !contains(fromJSON('["all", "deb"]'), needs.find.outputs.only))) &&
       (needs.exe.result == 'success' || (needs.exe.result == 'skipped' && !contains(fromJSON('["all", "exe"]'), needs.find.outputs.only))) &&
       (needs.apk.result == 'success' || (needs.apk.result == 'skipped' && needs.find.outputs.only != 'apk')) &&
-      (needs.dmg.result == 'success' || (needs.dmg.result == 'skipped' && (needs.find.outputs.beta == 'true' || !contains(fromJSON('["all", "dmg"]'), needs.find.outputs.only))))
+      (needs.dmg.result == 'success' || (needs.dmg.result == 'skipped' && !contains(fromJSON('["all", "dmg"]'), needs.find.outputs.only)))
     runs-on: ubuntu-24.04
     steps:
       - name: Published, as the latest or a pre-release
