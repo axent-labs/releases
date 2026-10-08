@@ -1,4 +1,4 @@
-# AXENT POS's releases (axent-labs/pos, A-010): every hour, and whenever run by hand for a tag, a
+# AXENT POS's releases (wira-systems/pos, A-010): every hour, and whenever run by hand for a tag, a
 # release tag of the private pos that has no release here yet is built into the files a shop
 # installs, and published here. This repository holds no source, and its logs are public: no step
 # prints the source, only the finished files leave a build, and a release says what each file is
@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "A tag of axent-labs/pos to build, as v0.2.0; empty for the newest not yet built"
+        description: "A tag of wira-systems/pos to build, as v0.2.0; empty for the newest not yet built"
         required: false
       try:
         description: "Or a branch of pos, only to try its builds: nothing is uploaded nor published"
@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  POS: git@github.com:axent-labs/pos.git
+  POS: git@github.com:wira-systems/pos.git
   QT_VERSION: "6.8.3"
   # Released before this repository built anything: never built on the hour, only when asked.
   BEFORE: "v0.1.0-beta.1 v0.1.0-beta.2 v0.1.0-beta.3 v0.1.0 v0.2.1-beta.1 v0.3.0-beta.1"
@@ -81,7 +81,7 @@ jobs:
           pick=""
           if [ -n "$ASKED" ]; then
             if ! grep -qx -- "$ASKED" <<<"$tags"; then
-              echo "::error::$ASKED is not a tag of axent-labs/pos"
+              echo "::error::$ASKED is not a tag of wira-systems/pos"
               exit 1
             fi
             if grep -qx -- "$ASKED" <<<"$made"; then

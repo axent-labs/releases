@@ -8,7 +8,7 @@
 #
 #   packaging/deb.sh POS_DIR BUILD_DIR OUT_DIR
 #
-# POS_DIR is axent-labs/pos at a release's tag, whose menu entry and icon it takes; BUILD_DIR holds
+# POS_DIR is wira-systems/pos at a release's tag, whose menu entry and icon it takes; BUILD_DIR holds
 # a Release build of the program alone (cmake --build ... --target ledgry). Kept here, not in pos,
 # so any tag can be packaged, those from before this script too. Needs
 # qmake of the Qt it was built with on PATH, or QMAKE set to it, and dpkg-deb. Refuses to make a
